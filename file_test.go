@@ -2,10 +2,48 @@ package xlsx
 
 import (
 	"encoding/xml"
+	"io"
+	"os"
 	"path/filepath"
 
 	. "gopkg.in/check.v1"
 )
+
+// ReaderAtCounter wraps a ReaderAt and counts the number of bytes that are read out of it
+type ReaderAtCounter struct {
+	readerAt  io.ReaderAt
+	bytesRead int
+}
+
+var _ io.ReaderAt = &ReaderAtCounter{}
+
+// NewReaderAtCounter creates a ReaderAtCounter by opening the file name, and provides the size which is needed for
+// opening as XLSX.
+func NewReaderAtCounter(name string) (*ReaderAtCounter, int64, error) {
+	f, err := os.Open(name)
+	if err != nil {
+		return nil, -1, err
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, -1, err
+	}
+	readerAtCounter := &ReaderAtCounter{
+		readerAt: f,
+	}
+	return readerAtCounter, fi.Size(), nil
+}
+
+func (r *ReaderAtCounter) ReadAt(p []byte, off int64) (n int, err error) {
+	n, err = r.readerAt.ReadAt(p, off)
+	r.bytesRead += n
+	return n, err
+}
+
+func (r *ReaderAtCounter) GetBytesRead() int {
+	return r.bytesRead
+}
 
 type FileSuite struct{}
 
@@ -15,11 +53,74 @@ var _ = Suite(&FileSuite{})
 // struct.
 func (l *FileSuite) TestOpenFile(c *C) {
 	var xlsxFile *File
-	var error error
+	var err error
 
-	xlsxFile, error = OpenFile("./testdocs/testfile.xlsx")
-	c.Assert(error, IsNil)
+	xlsxFile, err = OpenFile("./testdocs/testfile.xlsx")
+	c.Assert(err, IsNil)
 	c.Assert(xlsxFile, NotNil)
+}
+
+func (l *FileSuite) TestPartialReadsWithFewSharedStringsOnlyPartiallyReads(c *C) {
+	// This test verifies that a large file is only partially read when using a small row limit.
+	// This file is 11,228,530 bytes, but only 14,020 bytes get read out when using a row limit of 10.
+	// I'm specifying a limit of 20,000 to prevent test flakiness if the bytes read fluctuates with small code changes.
+	rowLimit := 10
+	// It is possible that readLimit will need to be increased by a small amount in the future, but do not increase it
+	// to anywhere near a significant amount of 11 million. We're testing that this number is low, to ensure that partial
+	// reads are fast.
+	readLimit := 20 * 1000
+	reader, size, err := NewReaderAtCounter("testdocs/large_sheet_no_shared_strings_no_dimension_tag.xlsx")
+	if err != nil {
+		c.Fatal(err)
+	}
+	file, err := OpenReaderAtWithRowLimit(reader, size, rowLimit)
+	if reader.bytesRead > readLimit {
+		// If this test begins failing, do not increase readLimit dramatically. Instead investigate why the number of
+		// bytes read went up and fix this issue.
+		c.Errorf("Reading %v rows from a sheet with ~31,000 rows and few shared strings read %v bytes, must read less than %v bytes", rowLimit, reader.bytesRead, readLimit)
+	}
+	if len(file.Sheets[0].Rows) != rowLimit {
+		c.Errorf("Expected sheet to have %v rows, but found %v rows", rowLimit, len(file.Sheets[0].Rows))
+	}
+}
+
+func (l *FileSuite) TestPartialReadsWithLargeSharedStringsOnlyPartiallyReads(c *C) {
+	// This test verifies that a large file is only partially read when using a small row limit.
+	// This file is 7,055,632 bytes, but only 1,092,839 bytes get read out when using a row limit of 10.
+	// I'm specifying a limit of 1.2 MB to prevent test flakiness if the bytes read fluctuates with small code changes.
+	// The reason that this test has a much larger limit than TestPartialReadsWithFewSharedStringsOnlyPartiallyReads
+	// is that this file has a Shared Strings file that is a little over 1 MB.
+	rowLimit := 10
+	// It is possible that readLimit will need to be increased by a small amount in the future, but do not increase it
+	// to anywhere near a significant amount of 7 million. We're testing that this number is low, to ensure that partial
+	// reads are fast.
+	readLimit := int(1.2 * 1000 * 1000)
+	reader, size, err := NewReaderAtCounter("testdocs/large_sheet_large_sharedstrings_dimension_tag.xlsx")
+	if err != nil {
+		c.Fatal(err)
+	}
+	file, err := OpenReaderAtWithRowLimit(reader, size, rowLimit)
+	if reader.bytesRead > readLimit {
+		// If this test begins failing, do not increase readLimit dramatically. Instead investigate why the number of
+		// bytes read went up and fix this issue.
+		c.Errorf("Reading %v rows from a sheet with ~31,000 rows and a large shared strings read %v bytes, must read less than %v bytes", rowLimit, reader.bytesRead, readLimit)
+	}
+	// This is testing that the sheet was truncated, but it is also testing that the dimension tag was ignored.
+	// If the dimension tag is not correctly ignored, there will be 10 rows of the data, plus ~31k empty rows tacked on.
+	if len(file.Sheets[0].Rows) != rowLimit {
+		c.Errorf("Expected sheet to have %v rows, but found %v rows", rowLimit, len(file.Sheets[0].Rows))
+	}
+}
+
+func (l *FileSuite) TestPartialReadsWithFewerRowsThanRequested(c *C) {
+	rowLimit := 10
+	file, err := OpenFileWithRowLimit("testdocs/testfile.xlsx", rowLimit)
+	if err != nil {
+		c.Fatal(err)
+	}
+	if len(file.Sheets[0].Rows) != 2 {
+		c.Errorf("Expected sheet to have %v rows, but found %v rows", 2, len(file.Sheets[0].Rows))
+	}
 }
 
 func (l *FileSuite) TestOpenFileWithoutStyleAndSharedStrings(c *C) {
@@ -275,6 +376,20 @@ func (l *FileSuite) TestAppendSheetWithDuplicateName(c *C) {
 	c.Assert(err, ErrorMatches, "duplicate sheet name 'MySheet'.")
 }
 
+// Test that we can read & create a 31 rune sheet name
+func (l *FileSuite) TestMaxSheetNameLength(c *C) {
+	// Open a genuine xlsx created by Microsoft Excel 2007
+	xlsxFile, err := OpenFile("./testdocs/max_sheet_name_length.xlsx")
+	c.Assert(err, IsNil)
+	c.Assert(xlsxFile, NotNil)
+	c.Assert(xlsxFile.Sheets[0].Name, Equals, "αααααβββββγγγγγδδδδδεεεεεζζζζζη")
+	// Create a new file with the same sheet name
+	f := NewFile()
+	s, err := f.AddSheet(xlsxFile.Sheets[0].Name)
+	c.Assert(err, IsNil)
+	c.Assert(s.Name, Equals, "αααααβββββγγγγγδδδδδεεεεεζζζζζη")
+}
+
 // Test that we can get the Nth sheet
 func (l *FileSuite) TestNthSheet(c *C) {
 	var f *File
@@ -286,6 +401,15 @@ func (l *FileSuite) TestNthSheet(c *C) {
 	c.Assert(sheetByIndex, NotNil)
 	c.Assert(sheetByIndex, Equals, sheet)
 	c.Assert(sheetByIndex, Equals, sheetByName)
+}
+
+// Test invalid sheet name characters
+func (l *FileSuite) TestInvalidSheetNameCharacters(c *C) {
+	f := NewFile()
+	for _, invalidChar := range []string{":", "\\", "/", "?", "*", "[", "]"} {
+		_, err := f.AddSheet(invalidChar)
+		c.Assert(err, NotNil)
+	}
 }
 
 // Test that we can create a Workbook and marshal it to XML.
@@ -446,7 +570,7 @@ func (l *FileSuite) TestMarshalFile(c *C) {
         <a:font script="Geor" typeface="Sylfaen"/>
       </a:majorFont>
       <a:minorFont>
-        <a:latin typeface="Calibri"/>
+        <a:latin typeface="Arial"/>
         <a:ea typeface=""/>
         <a:cs typeface=""/>
         <a:font script="Jpan" typeface="ＭＳ Ｐゴシック"/>
@@ -716,8 +840,7 @@ func (l *FileSuite) TestMarshalFile(c *C) {
 	// For now we only allow simple string data in the
 	// spreadsheet.  Style support will follow.
 	expectedStyles := `<?xml version="1.0" encoding="UTF-8"?>
-<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="1"><font><sz val="12"/><name val="Verdana"/><family val="0"/><charset val="0"/></font></fonts><fills count="2"><fill><patternFill patternType="none"><fgColor rgb="FFFFFFFF"/><bgColor rgb="00000000"/></patternFill></fill><fill><patternFill patternType="lightGray"/></fill></fills><borders count="1"><border><left style="none"></left><right style="none"></right><top style="none"></top><bottom style="none"></bottom></border></borders><cellXfs count="2"><xf applyAlignment="0" applyBorder="0" applyFont="0" applyFill="0" applyNumberFormat="0" applyProtection="0" borderId="0" fillId="0" fontId="0" numFmtId="0"><alignment horizontal="general" indent="0" shrinkToFit="0" textRotation="0" vertical="bottom" wrapText="0"/></xf><xf applyAlignment="0" applyBorder="0" applyFont="0" applyFill="0" applyNumberFormat="0" applyProtection="0" borderId="0" fillId="0" fontId="0" numFmtId="0"><alignment horizontal="general" indent="0" shrinkToFit="0" textRotation="0" vertical="bottom" wrapText="0"/></xf></cellXfs></styleSheet>`
-
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="1"><font><sz val="12"/><name val="Verdana"/><family val="0"/><charset val="0"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="lightGray"/></fill></fills><borders count="1"><border><left style="none"></left><right style="none"></right><top style="none"></top><bottom style="none"></bottom></border></borders><cellXfs count="2"><xf applyAlignment="0" applyBorder="0" applyFont="0" applyFill="0" applyNumberFormat="0" applyProtection="0" borderId="0" fillId="0" fontId="0" numFmtId="0"><alignment horizontal="general" indent="0" shrinkToFit="0" textRotation="0" vertical="bottom" wrapText="0"/></xf><xf applyAlignment="0" applyBorder="0" applyFont="0" applyFill="0" applyNumberFormat="0" applyProtection="0" borderId="0" fillId="0" fontId="0" numFmtId="0"><alignment horizontal="general" indent="0" shrinkToFit="0" textRotation="0" vertical="bottom" wrapText="0"/></xf></cellXfs></styleSheet>`
 	c.Assert(parts["xl/styles.xml"], Equals, expectedStyles)
 }
 
@@ -789,6 +912,20 @@ func fileToSliceCheckOutput(c *C, output [][][]string) {
 	c.Assert(len(output[2]), Equals, 0)
 }
 
+func (s *SliceReaderSuite) TestFileToSliceUnmerged(c *C) {
+	output, err := FileToSliceUnmerged("./testdocs/testfile.xlsx")
+	c.Assert(err, IsNil)
+	fileToSliceCheckOutput(c, output)
+
+	// merged cells
+	output, err = FileToSliceUnmerged("./testdocs/merged_cells.xlsx")
+	c.Assert(err, IsNil)
+	c.Assert(output[0][6][2], Equals, "Happy New Year!")
+	c.Assert(output[0][6][1], Equals, "Happy New Year!")
+	c.Assert(output[0][1][0], Equals, "01.01.2016")
+	c.Assert(output[0][2][0], Equals, "01.01.2016")
+}
+
 func (l *FileSuite) TestReadWorkbookWithTypes(c *C) {
 	var xlsxFile *File
 	var err error
@@ -836,7 +973,7 @@ func (l *FileSuite) TestReadWorkbookWithTypes(c *C) {
 	c.Assert(sheet.Rows[5].Cells[0].Bool(), Equals, true)
 
 	// formula
-	c.Assert(sheet.Rows[6].Cells[0].Type(), Equals, CellTypeFormula)
+	c.Assert(sheet.Rows[6].Cells[0].Type(), Equals, CellTypeNumeric)
 	c.Assert(sheet.Rows[6].Cells[0].Formula(), Equals, "10+20")
 	c.Assert(sheet.Rows[6].Cells[0].Value, Equals, "30")
 

@@ -13,12 +13,96 @@ var _ = Suite(&SheetSuite{})
 
 // Test we can add a Row to a Sheet
 func (s *SheetSuite) TestAddRow(c *C) {
+	// Create a file with three rows.
 	var f *File
 	f = NewFile()
 	sheet, _ := f.AddSheet("MySheet")
-	row := sheet.AddRow()
+	row0 := sheet.AddRow()
+	cell0 := row0.AddCell()
+	cell0.Value = "Row 0"
+	c.Assert(row0, NotNil)
+	row1 := sheet.AddRow()
+	cell1 := row1.AddCell()
+	cell1.Value = "Row 1"
+	row2 := sheet.AddRow()
+	cell2 := row2.AddCell()
+	cell2.Value = "Row 2"
+	// Check the file
+	expected := []string{"Row 0", "Row 1", "Row 2"}
+	c.Assert(len(sheet.Rows), Equals, len(expected))
+	for i, row := range sheet.Rows {
+		c.Assert(row.Cells[0].Value, Equals, expected[i])
+	}
+
+	// Insert a row in the middle
+	row1pt5, err := sheet.AddRowAtIndex(2)
+	c.Assert(err, IsNil)
+	cell1pt5 := row1pt5.AddCell()
+	cell1pt5.Value = "Row 1.5"
+
+	expected = []string{"Row 0", "Row 1", "Row 1.5", "Row 2"}
+	c.Assert(len(sheet.Rows), Equals, len(expected))
+	for i, row := range sheet.Rows {
+		c.Assert(row.Cells[0].Value, Equals, expected[i])
+	}
+
+	// Insert a row at the beginning
+	rowNewStart, err := sheet.AddRowAtIndex(0)
+	c.Assert(err, IsNil)
+	cellNewStart := rowNewStart.AddCell()
+	cellNewStart.Value = "Row -1"
+	// Insert a row at one index past the end, this is the same as AddRow().
+	row2pt5, err := sheet.AddRowAtIndex(5)
+	c.Assert(err, IsNil)
+	cell2pt5 := row2pt5.AddCell()
+	cell2pt5.Value = "Row 2.5"
+
+	expected = []string{"Row -1", "Row 0", "Row 1", "Row 1.5", "Row 2", "Row 2.5"}
+	c.Assert(len(sheet.Rows), Equals, len(expected))
+	for i, row := range sheet.Rows {
+		c.Assert(row.Cells[0].Value, Equals, expected[i])
+	}
+
+	// Negative and out of range indicies should fail for insert
+	_, err = sheet.AddRowAtIndex(-1)
+	c.Assert(err, NotNil)
+	// Since we allow inserting into the position that does not yet exist, it has to be 1 greater
+	// than you would think in order to fail.
+	_, err = sheet.AddRowAtIndex(7)
+	c.Assert(err, NotNil)
+
+	// Negative and out of range indicies should fail for remove
+	err = sheet.RemoveRowAtIndex(-1)
+	c.Assert(err, NotNil)
+	err = sheet.RemoveRowAtIndex(6)
+	c.Assert(err, NotNil)
+
+	// Remove from the beginning, the end, and the middle.
+	err = sheet.RemoveRowAtIndex(0)
+	c.Assert(err, IsNil)
+	err = sheet.RemoveRowAtIndex(4)
+	c.Assert(err, IsNil)
+	err = sheet.RemoveRowAtIndex(2)
+	c.Assert(err, IsNil)
+
+	expected = []string{"Row 0", "Row 1", "Row 2"}
+	c.Assert(len(sheet.Rows), Equals, len(expected))
+	for i, row := range sheet.Rows {
+		c.Assert(row.Cells[0].Value, Equals, expected[i])
+	}
+}
+
+// Test we can get row by index from  Sheet
+func (s *SheetSuite) TestGetRowByIndex(c *C) {
+	var f *File
+	f = NewFile()
+	sheet, _ := f.AddSheet("MySheet")
+	row := sheet.Row(10)
 	c.Assert(row, NotNil)
-	c.Assert(len(sheet.Rows), Equals, 1)
+	c.Assert(len(sheet.Rows), Equals, 11)
+	row = sheet.Row(2)
+	c.Assert(row, NotNil)
+	c.Assert(len(sheet.Rows), Equals, 11)
 }
 
 func (s *SheetSuite) TestMakeXLSXSheetFromRows(c *C) {
@@ -77,20 +161,19 @@ func (s *SheetSuite) TestMakeXLSXSheetWithNumFormats(c *C) {
 
 	c.Assert(styles.CellStyleXfs, IsNil)
 
-	c.Assert(styles.CellXfs.Count, Equals, 5)
+	c.Assert(styles.CellXfs.Count, Equals, 4)
 	c.Assert(styles.CellXfs.Xf[0].NumFmtId, Equals, 0)
-	c.Assert(styles.CellXfs.Xf[1].NumFmtId, Equals, 0)
-	c.Assert(styles.CellXfs.Xf[2].NumFmtId, Equals, 1)
-	c.Assert(styles.CellXfs.Xf[3].NumFmtId, Equals, 14)
-	c.Assert(styles.CellXfs.Xf[4].NumFmtId, Equals, 164)
+	c.Assert(styles.CellXfs.Xf[1].NumFmtId, Equals, 1)
+	c.Assert(styles.CellXfs.Xf[2].NumFmtId, Equals, 14)
+	c.Assert(styles.CellXfs.Xf[3].NumFmtId, Equals, 164)
 	c.Assert(styles.NumFmts.Count, Equals, 1)
 	c.Assert(styles.NumFmts.NumFmt[0].NumFmtId, Equals, 164)
 	c.Assert(styles.NumFmts.NumFmt[0].FormatCode, Equals, "hh:mm:ss")
 
 	// Finally we check that the cell points to the right CellXf /
 	// CellStyleXf.
-	c.Assert(worksheet.SheetData.Row[0].C[0].S, Equals, 1)
-	c.Assert(worksheet.SheetData.Row[0].C[1].S, Equals, 2)
+	c.Assert(worksheet.SheetData.Row[0].C[0].S, Equals, 0)
+	c.Assert(worksheet.SheetData.Row[0].C[1].S, Equals, 1)
 }
 
 // When we create the xlsxSheet we also populate the xlsxStyles struct
@@ -129,8 +212,8 @@ func (s *SheetSuite) TestMakeXLSXSheetAlsoPopulatesXLSXSTyles(c *C) {
 
 	c.Assert(styles.Fills.Count, Equals, 3)
 	c.Assert(styles.Fills.Fill[0].PatternFill.PatternType, Equals, "none")
-	c.Assert(styles.Fills.Fill[0].PatternFill.FgColor.RGB, Equals, "FFFFFFFF")
-	c.Assert(styles.Fills.Fill[0].PatternFill.BgColor.RGB, Equals, "00000000")
+	c.Assert(styles.Fills.Fill[0].PatternFill.FgColor.RGB, Equals, "")
+	c.Assert(styles.Fills.Fill[0].PatternFill.BgColor.RGB, Equals, "")
 
 	c.Assert(styles.Borders.Count, Equals, 2)
 	c.Assert(styles.Borders.Border[1].Left.Style, Equals, "none")
@@ -233,12 +316,11 @@ func (s *SheetSuite) TestSetColWidth(c *C) {
 	sheet, _ := file.AddSheet("Sheet1")
 	_ = sheet.SetColWidth(0, 0, 10.5)
 	_ = sheet.SetColWidth(1, 5, 11)
-
 	c.Assert(sheet.Cols[0].Width, Equals, 10.5)
 	c.Assert(sheet.Cols[0].Max, Equals, 1)
 	c.Assert(sheet.Cols[0].Min, Equals, 1)
 	c.Assert(sheet.Cols[1].Width, Equals, float64(11))
-	c.Assert(sheet.Cols[1].Max, Equals, 6)
+	c.Assert(sheet.Cols[1].Max, Equals, 2)
 	c.Assert(sheet.Cols[1].Min, Equals, 2)
 }
 
@@ -321,10 +403,9 @@ func (s *SheetSuite) TestAlignment(c *C) {
 	obtained := parts["xl/styles.xml"]
 
 	shouldbe := `<?xml version="1.0" encoding="UTF-8"?>
-<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="1"><font><sz val="12"/><name val="Verdana"/><family val="0"/><charset val="0"/></font></fonts><fills count="2"><fill><patternFill patternType="none"><fgColor rgb="FFFFFFFF"/><bgColor rgb="00000000"/></patternFill></fill><fill><patternFill patternType="lightGray"/></fill></fills><borders count="1"><border><left style="none"></left><right style="none"></right><top style="none"></top><bottom style="none"></bottom></border></borders><cellXfs count="8"><xf applyAlignment="0" applyBorder="0" applyFont="0" applyFill="0" applyNumberFormat="0" applyProtection="0" borderId="0" fillId="0" fontId="0" numFmtId="0"><alignment horizontal="general" indent="0" shrinkToFit="0" textRotation="0" vertical="bottom" wrapText="0"/></xf><xf applyAlignment="0" applyBorder="0" applyFont="0" applyFill="0" applyNumberFormat="0" applyProtection="0" borderId="0" fillId="0" fontId="0" numFmtId="0"><alignment horizontal="general" indent="0" shrinkToFit="0" textRotation="0" vertical="bottom" wrapText="0"/></xf><xf applyAlignment="1" applyBorder="0" applyFont="0" applyFill="0" applyNumberFormat="0" applyProtection="0" borderId="0" fillId="0" fontId="0" numFmtId="0"><alignment horizontal="left" indent="0" shrinkToFit="0" textRotation="0" vertical="bottom" wrapText="0"/></xf><xf applyAlignment="1" applyBorder="0" applyFont="0" applyFill="0" applyNumberFormat="0" applyProtection="0" borderId="0" fillId="0" fontId="0" numFmtId="0"><alignment horizontal="center" indent="0" shrinkToFit="0" textRotation="0" vertical="bottom" wrapText="0"/></xf><xf applyAlignment="1" applyBorder="0" applyFont="0" applyFill="0" applyNumberFormat="0" applyProtection="0" borderId="0" fillId="0" fontId="0" numFmtId="0"><alignment horizontal="right" indent="0" shrinkToFit="0" textRotation="0" vertical="bottom" wrapText="0"/></xf><xf applyAlignment="1" applyBorder="0" applyFont="0" applyFill="0" applyNumberFormat="0" applyProtection="0" borderId="0" fillId="0" fontId="0" numFmtId="0"><alignment horizontal="general" indent="0" shrinkToFit="0" textRotation="0" vertical="top" wrapText="0"/></xf><xf applyAlignment="1" applyBorder="0" applyFont="0" applyFill="0" applyNumberFormat="0" applyProtection="0" borderId="0" fillId="0" fontId="0" numFmtId="0"><alignment horizontal="general" indent="0" shrinkToFit="0" textRotation="0" vertical="center" wrapText="0"/></xf><xf applyAlignment="1" applyBorder="0" applyFont="0" applyFill="0" applyNumberFormat="0" applyProtection="0" borderId="0" fillId="0" fontId="0" numFmtId="0"><alignment horizontal="general" indent="0" shrinkToFit="0" textRotation="0" vertical="bottom" wrapText="0"/></xf></cellXfs></styleSheet>`
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="1"><font><sz val="12"/><name val="Verdana"/><family val="0"/><charset val="0"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="lightGray"/></fill></fills><borders count="1"><border><left style="none"></left><right style="none"></right><top style="none"></top><bottom style="none"></bottom></border></borders><cellXfs count="8"><xf applyAlignment="0" applyBorder="0" applyFont="0" applyFill="0" applyNumberFormat="0" applyProtection="0" borderId="0" fillId="0" fontId="0" numFmtId="0"><alignment horizontal="general" indent="0" shrinkToFit="0" textRotation="0" vertical="bottom" wrapText="0"/></xf><xf applyAlignment="0" applyBorder="0" applyFont="0" applyFill="0" applyNumberFormat="0" applyProtection="0" borderId="0" fillId="0" fontId="0" numFmtId="0"><alignment horizontal="general" indent="0" shrinkToFit="0" textRotation="0" vertical="bottom" wrapText="0"/></xf><xf applyAlignment="1" applyBorder="0" applyFont="0" applyFill="0" applyNumberFormat="0" applyProtection="0" borderId="0" fillId="0" fontId="0" numFmtId="0"><alignment horizontal="left" indent="0" shrinkToFit="0" textRotation="0" vertical="bottom" wrapText="0"/></xf><xf applyAlignment="1" applyBorder="0" applyFont="0" applyFill="0" applyNumberFormat="0" applyProtection="0" borderId="0" fillId="0" fontId="0" numFmtId="0"><alignment horizontal="center" indent="0" shrinkToFit="0" textRotation="0" vertical="bottom" wrapText="0"/></xf><xf applyAlignment="1" applyBorder="0" applyFont="0" applyFill="0" applyNumberFormat="0" applyProtection="0" borderId="0" fillId="0" fontId="0" numFmtId="0"><alignment horizontal="right" indent="0" shrinkToFit="0" textRotation="0" vertical="bottom" wrapText="0"/></xf><xf applyAlignment="1" applyBorder="0" applyFont="0" applyFill="0" applyNumberFormat="0" applyProtection="0" borderId="0" fillId="0" fontId="0" numFmtId="0"><alignment horizontal="general" indent="0" shrinkToFit="0" textRotation="0" vertical="top" wrapText="0"/></xf><xf applyAlignment="1" applyBorder="0" applyFont="0" applyFill="0" applyNumberFormat="0" applyProtection="0" borderId="0" fillId="0" fontId="0" numFmtId="0"><alignment horizontal="general" indent="0" shrinkToFit="0" textRotation="0" vertical="center" wrapText="0"/></xf><xf applyAlignment="1" applyBorder="0" applyFont="0" applyFill="0" applyNumberFormat="0" applyProtection="0" borderId="0" fillId="0" fontId="0" numFmtId="0"><alignment horizontal="general" indent="0" shrinkToFit="0" textRotation="0" vertical="bottom" wrapText="0"/></xf></cellXfs></styleSheet>`
 
 	expected := bytes.NewBufferString(shouldbe)
-
 	c.Assert(obtained, Equals, expected.String())
 }
 
